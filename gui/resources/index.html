@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>beaver</title>
+		<link rel="stylesheet" href="./styles.css">
+	</head>
+	<body>
+		
+		<div class="app-ctrl">
+
+			<div class="app-ctrl__button hover_fill-bg cu" id="btn-collapse">
+				<div id="btn-collapse__inner"></div>
+			</div>
+
+			<div class="app-ctrl__button hover_fill-bg cu" id="btn-close">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+					<path fill-rule="evenodd" clip-rule="evenodd" d="M0.292891 0.292891C0.683421 -0.0976302 1.31658 -0.0976302 1.70711 0.292891L7.00001 5.58581L12.2929 0.292891C12.6834 -0.0976302 13.3166 -0.0976302 13.7071 0.292891C14.0976 0.683421 14.0976 1.31658 13.7071 1.70711L8.41422 7.00001L13.7071 12.2929C14.0976 12.6834 14.0976 13.3166 13.7071 13.7071C13.3166 14.0976 12.6834 14.0976 12.2929 13.7071L7.00001 8.41422L1.70711 13.7071C1.31658 14.0976 0.683421 14.0976 0.292891 13.7071C-0.0976302 13.3166 -0.0976302 12.6834 0.292891 12.2929L5.58581 7.00001L0.292891 1.70711C-0.0976302 1.31658 -0.0976302 0.683421 0.292891 0.292891Z"/>
+				</svg>
+			</div>
+
+		</div>
+
+		<div class="window window-start">
+			<div class="window-start__inner">
+				<div class="window-start__inputs-block">
+
+					<div class="window-start__input-block">
+						<p class="input-block__label t-s">Стартовая директория</p>
+						<input type="text" style="width: 640px;" id="input-startDir">
+					</div>
+
+					<div class="window-start__input-block">
+						<p class="input-block__label t-s">Искомое название</p>
+						<input type="text" style="width: 320px;" id="input-searchStr">
+					</div>
+
+				</div>
+
+				<button class="hover_button" style="width: 640px;" id="btn-search">Найти</button>
+			</div>
+		</div>
+
+		<div class="window window-results">
+
+			<div class="window-results__inner-container">
+				<p class="window-results__result-title">Результаты поиска (<span id="results-num">123</span>)</p>
+				<button class="hover_button" id="btn-openFilters" style="width: 150px;">Фильтры</button>
+			</div>
+
+			<div class="window-results__inner-container">
+				<!-- window-results__content_active-filters -->
+				<!-- window-results__content_active-result -->
+				<div class="window-results__content">
+
+					<div class="window-results__content__filters">
+
+						<div class="filters__block">
+							<div class="filters-block__body" id="filters-block__body-exclude">
+								<p class="filters-block__body__label t-l">Исключить:</p>
+							</div>
+							<div class="filters-block__actions">
+								<input type="text" id="input-exclude" style="width: 150px;">
+								<button class="hover_button" style="width: 75px;" id="btn-exclude">Добавить</button>
+							</div>
+						</div>
+
+						<div class="filters__block">
+							<div class="filters-block__body" id="filters-block__body-include">
+								<p class="filters-block__body__label t-l">Только:</p>
+							</div>
+							<div class="filters-block__actions">
+								<input type="text" id="input-include" style="width: 150px;">
+								<button class="hover_button" style="width: 75px;" id="btn-include">Добавить</button>
+							</div>
+						</div>
+
+						<div class="filters__block">
+							<div class="filters-block__body" style="align-items: start;">
+								<p class="filters-block__body__label t-l">Тип:</p>
+								<div class="filters-block__input-type">
+
+									<div class="input-type__item input-type__item_active cu" id="input-type_all">
+										<div class="input-type__item__circle">
+											<div class="input-type__item__circle__inner"></div>
+										</div>
+										<p class="input-type__item__label">Все</p>
+									</div>
+
+									<div class="input-type__item cu" id="input-type_file">
+										<div class="input-type__item__circle">
+											<div class="input-type__item__circle__inner"></div>
+										</div>
+										<p class="input-type__item__label">Файл</p>
+									</div>
+
+									<div class="input-type__item cu" id="input-type_dir">
+										<div class="input-type__item__circle">
+											<div class="input-type__item__circle__inner"></div>
+										</div>
+										<p class="input-type__item__label">Папка</p>
+									</div>
+									
+								</div>
+							</div>
+							<div class="filters-block__actions" style="gap: 24px;">
+								<button class="hover_button" style="width: 150px;" id="btn-filtersSubmit">Применить</button>
+								<button class="hover_turn-color" style="width: 150px; background: var(--color-red); border: none" id="btn-filtersReset">Сбросить</button>
+							</div>
+						</div>
+						
+					</div>
+
+					<div class="window-results__content__result">
+						<div class="window-results__content__result__result-line">
+							
+						</div>
+					</div>
+
+				</div>
+				<div class="window-results__actions">
+					<button class="window-results__action-button hover_button" id="btn-resultsBack">← К поиску</button>
+					<button class="window-results__action-button hover_button" id="btn-resultsSave">💾 Сохранить</button>
+					<button class="window-results__action-button hover_button" id="btn-resultsCopy">📋 Копировать</button>
+				</div>
+			</div>
+
+		</div>
+
+		<div class="window window-loading">
+			<div class="window-loading__inner">
+				<div class="window-loading__loading-particle"></div>
+				<div class="window-loading__loading-particle"></div>
+				<div class="window-loading__loading-particle"></div>
+				<div class="window-loading__loading-particle"></div>
+				<div class="window-loading__loading-particle"></div>
+			</div>
+		</div>
+
+		<script src="/js/neutralino.js"></script>
+		<script src="/js/filtersEngine.js"></script>
+		<script src="/js/ui.js"></script>
+		<script src="/js/workspace.js"></script>
+		<script src="/js/main.js"></script>
+	</body>
+</html>
