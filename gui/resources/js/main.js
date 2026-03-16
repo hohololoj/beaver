@@ -53,16 +53,22 @@ class App {
         let buffer = '';
         let ended = false;
 
-        const proc = await Neutralino.os.spawnProcess(`beaver.exe "${startDir}" "${searchStr}"`);
+        console.log(NL_PATH);
+        console.log(NL_CWD);
+        const proc = await Neutralino.os.spawnProcess(`"${NL_PATH}/beaver.exe" "${startDir}" "${searchStr}"`);
+        console.log(`${NL_CWD}/beaver.exe "${startDir}" "${searchStr}"`);
+        
         Neutralino.events.on("spawnedProcess", (e) => {
             if (proc.id === e.detail.id) {
                 switch (e.detail.action) {
                     case 'stdOut': {
                         const data = e.detail.data;
+                        console.log(data);
                         if (data.includes('<3>')) {
                             ended = true;
                             buffer += data;
                             const result = buffer.slice(0, -3).split('<2>');
+                            console.log(result);
                             window.uiController.showFoundResults(result);
                         }
                         else {
@@ -71,8 +77,7 @@ class App {
                         break;
                     }
                     case 'stdErr': {
-                        const error = e.detail.data;
-                        this.crash(`Something went wrong: ${error}`);
+                        this.crash(`Something went wrong check beaver.exe for existence`);
                         break;
                     }
                     case 'exit': {
@@ -95,7 +100,8 @@ class App {
     readArgv(){
         const args = NL_ARGS;
         if(args[1] === '--startDir'){
-            const startDir = args[2];
+            const startDir = args[2].replace("\"", '');
+            console.log(startDir);
             window.uiController.applyStartDir(startDir);
         }
     }

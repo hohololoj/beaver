@@ -1,2 +1,0 @@
-cd gui
-neu run
