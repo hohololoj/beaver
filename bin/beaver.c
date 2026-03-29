@@ -1,8 +1,8 @@
 #include <windows.h>
-#include <shlwapi.h>
 #include <stdio.h>
 #include <process.h>
 #include <io.h>
+#include "strhasiw.h"
 
 UINT64 thrstat = 0;
 CRITICAL_SECTION g_sc;
@@ -67,10 +67,6 @@ void popTask(wchar_t** addr){
 		}
 		
 	LeaveCriticalSection(&g_sc);
-}
-
-boolean cmp(wchar_t* str){
-	return StrStrIW(str, targ) != NULL;
 }
 
 unsigned __stdcall taskRunner(void* param){
@@ -147,7 +143,7 @@ unsigned __stdcall taskRunner(void* param){
 			}
 
 			//Проверка названия на совпадение
-			if(cmp(fileName)){
+			if(StrHasIWBruteA(fileName, targ)){
 				// wprintf(L"%ls%ls<%d><2>", dir, fileName, is_dir);
 				char utf8_dir[1024], utf8_file[1024];
 

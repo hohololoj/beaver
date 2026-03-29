@@ -1,1 +1,1 @@
-gcc -O2 -march=x86-64 -o ../gui/beaver.exe beaver.c
+gcc -O2 -march=x86-64 -o ../gui/beaver.exe beaver.c strhasiw.c
