@@ -4,7 +4,7 @@
 #include <io.h>
 #include "strhasiw.h"
 
-UINT64 thrstat = 0;
+volatile LONG thrstat = 0;
 CRITICAL_SECTION g_sc;
 // LONG64 pushed_tasks = 0;
 
@@ -70,7 +70,8 @@ void popTask(wchar_t** addr){
 }
 
 unsigned __stdcall taskRunner(void* param){
-	const UINT8 id = (UINT8)(uintptr_t)param;
+	// const UINT8 id = (UINT8)(uintptr_t)param;
+	char im_active = 0;
 
 	WIN32_FIND_DATAW findData;
 	HANDLE hFind;
@@ -79,14 +80,15 @@ unsigned __stdcall taskRunner(void* param){
 		wchar_t* dir;
 		popTask(&dir);
 		if(dir == NULL){
-			InterlockedAnd64(&thrstat, ~(1ULL << id));
-			if(thrstat == 0){
+			// InterlockedAnd64(&thrstat, ~(1ULL << id));
+			if(im_active){InterlockedDecrement(&thrstat); im_active = 0;}
+			if(InterlockedCompareExchange(&thrstat, 0, 0) == 0){
 				// logThread(id, "crashing");
 				break;
 			}
 			else{
 				// logThread(id, "sleeping");
-				Sleep(1);
+				Sleep(0);
 				continue;
 			}
 		}
@@ -94,7 +96,8 @@ unsigned __stdcall taskRunner(void* param){
 			// logThreadEx(id, "got dir: ", dir);
 			// fprintf(log_file, "\nTH#%d: popped dir len = %zu", id, wcslen(dir));
 			// logThreadEx(id, L"scanning: ", dir);
-			InterlockedOr64(&thrstat, 1ULL << id);
+			if(!im_active){InterlockedIncrement(&thrstat); im_active = 1;}
+			// InterlockedOr64(&thrstat, 1ULL << id);
 		}
 		
 		size_t len = wcslen(dir);
