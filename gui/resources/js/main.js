@@ -53,7 +53,7 @@ class App {
         let buffer = '';
         let ended = false;
 
-        const start = performance.now();
+        // const start = performance.now();
         const proc = await Neutralino.os.spawnProcess(`"${NL_PATH}/beaver.exe" "${startDir}" "${searchStr}"`);
         
         Neutralino.events.on("spawnedProcess", (e) => {
@@ -62,7 +62,7 @@ class App {
                     case 'stdOut': {
                         const data = e.detail.data;
                         if (data.includes('<3>')) {
-                            const end = performance.now();
+                            // const end = performance.now();
                             // console.log(`Performance: ${end-start}ms`);
                             ended = true;
                             buffer += data;

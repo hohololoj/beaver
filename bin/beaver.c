@@ -59,11 +59,7 @@ void popTask(wchar_t** addr){
 			*addr = NULL;
 		}
 		else{
-			wchar_t* popped = tasks[--task_count];
-			int len = wcslen(popped);
-			*addr = malloc((len + 1) * sizeof(wchar_t));
-			memcpy(*addr, popped, (len+1)*sizeof(wchar_t));
-			free(popped);
+			*addr = tasks[--task_count];
 		}
 		
 	LeaveCriticalSection(&g_sc);
@@ -113,19 +109,21 @@ unsigned __stdcall taskRunner(void* param){
 		hFind = FindFirstFileW(searchDir, &findData);
 
 		if(hFind == INVALID_HANDLE_VALUE){
+			free(dir);
 		    free(searchDir);
 		    continue;
 		}
 
 		do{
 			wchar_t* fileName = findData.cFileName;
+			if(wcscmp(fileName, L".") == 0 || wcscmp(fileName, L"..") == 0){continue;} //отсечение "." ".." из списка
+
 			size_t name_len = wcslen(fileName);
 
-			if(wcscmp(fileName, L".") == 0 || wcscmp(fileName, L"..") == 0){continue;} //отсечение "." ".." из списка
 			UINT8 is_dir = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-			if(is_dir){ //если папка
+			if(is_dir){
 
-				size_t dirlen = len + wcslen(fileName);
+				size_t dirlen = len + name_len;
 
 				wchar_t* newDirname = malloc((dirlen+2)*sizeof(wchar_t));
 				if(newDirname == NULL){
@@ -170,6 +168,7 @@ unsigned __stdcall taskRunner(void* param){
 		}while(FindNextFileW(hFind, &findData));
 
 		free(searchDir);
+		free(dir);
 
 		FindClose(hFind);
 	}
