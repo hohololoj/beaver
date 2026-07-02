@@ -6,13 +6,13 @@ echo %ROOT%
 if exist build ( rmdir /s /q %ROOT%\build )
 mkdir build
 
-::gcc compile
+::compile
 cd bin
 call build.bat
 cd ..
 
 ::переместить exe
-move %ROOT%\gui\beaver.exe %ROOT%\build\
+move %ROOT%\bin\beaver.exe %ROOT%\build\
 
 ::neu compile
 cd gui
@@ -54,6 +54,7 @@ resourcehacker -open %ROOT%\build\beaver-app.exe ^
                -mask MANIFEST,1, ^
                -resource %ROOT%\build_resources\beaver.manifest
 
+if exist "%ROOT%\bin\setup\build" rmdir /s /q "%ROOT%\bin\setup\build"
 move %ROOT%\build %ROOT%\bin\setup\
 
 iscc.exe /O"%ROOT%\bin\setup\build" "%ROOT%\bin\setup\setup.iss"

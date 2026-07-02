@@ -1,270 +1,469 @@
 #include <windows.h>
+#include <winioctl.h>
 #include <stdio.h>
+#include <malloc.h>
 #include <process.h>
-#include <io.h>
+
 #include "strhasiw.h"
 
-volatile LONG thrstat = 0;
-CRITICAL_SECTION g_sc;
-// LONG64 pushed_tasks = 0;
+#define INDEX_START (1<<14)
 
-// FILE* log_file = NULL;
-// FILE* res_file = NULL;
-// FILE* dir_log = NULL;
+typedef struct{
+	WCHAR name[260];
+	int nameLen;
+	BOOL isDir;
+	UINT64 parentId;
+}MFTDataRecord; // 536 байтов
 
-wchar_t** tasks = NULL;
+typedef struct{
+	DWORD start;
+	DWORD end;
+}ThreadArgs;
 
-LONG64 task_count = 0;
-LONG64 task_cap = 0;
+#define PERFORMANCE_DECLARATION()\
+	LARGE_INTEGER frequency, start, end;\
+    double start_ns, end_ns;\
+    QueryPerformanceFrequency(&frequency);
+#define PERFORMANCE_START()\
+	QueryPerformanceCounter(&start);
+#define PERFORMANCE_END()\
+	QueryPerformanceCounter(&end);
+#define PERFORMANCE_CALC()\
+	start_ns = (double)start.QuadPart * 1000000000.0 / frequency.QuadPart;\
+    end_ns = (double)end.QuadPart * 1000000000.0 / frequency.QuadPart;
 
-wchar_t* targ;
+BYTE* buffer = NULL;
+DWORD bufferSize = 0;
 
-// void logThread(UINT8 id, char* message){
-// 	fprintf(log_file, "\nTH#%d: %s", id, message);
-// 	fflush(stdout);
-// }
-// void logThreadEx(UINT8 id, wchar_t* message, wchar_t* str){
-// 	fprintf(log_file, "\nTH#%d: %ls%ls", id, message, str);
-// 	fflush(log_file);
-// }
-// void logRes(char* result){
-// 	fprintf(res_file, "\n%s", result);
-// }
+MFTDataRecord* mftDataRecords = NULL;
+DWORD cMftDataRecords = 0;
 
-void pushTask(const wchar_t* task){
-	EnterCriticalSection(&g_sc);
+int CPUs = 0;
+WCHAR* target = NULL;
+WCHAR* path = NULL;
+int pathLen = 0;
+
+HANDLE* threads = NULL;
+ThreadArgs* thrArgs = NULL;
+UINT64 parentDirId;
+CRITICAL_SECTION cs;
+
+void getLastFileId(){
 	
-		if(task_count == task_cap){
-			task_cap *=2;
-			tasks = realloc(tasks, task_cap * sizeof(wchar_t*));
-		}
+	HANDLE hDir = CreateFileW(
+		path,
+		0,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		NULL,
+		OPEN_EXISTING,
+		FILE_FLAG_BACKUP_SEMANTICS,
+		NULL
+	);
 
-		tasks[task_count] = malloc((wcslen(task)+1)*sizeof(wchar_t));
-		if(tasks[task_count] == NULL){
+	if(hDir == INVALID_HANDLE_VALUE){
+		exit(GetLastError());
+	}
+
+	FILE_ID_INFO fidInfo = {0};
+
+	if(!GetFileInformationByHandleEx(
+		hDir,
+		FileIdInfo,
+		&fidInfo,
+		sizeof(fidInfo)
+	)){
+		CloseHandle(hDir);
+		exit(__LINE__);
+	}
+
+	CloseHandle(hDir);
+
+	memcpy(&parentDirId, &fidInfo.FileId, 8);
+	parentDirId &= 0xFFFFFFFFFFFF;
+}
+
+void makeTable(){
+
+	HANDLE hVol = CreateFileW(
+		L"\\\\.\\C:", 
+        GENERIC_READ, 
+        FILE_SHARE_READ | FILE_SHARE_WRITE, 
+        NULL, 
+        OPEN_EXISTING, 
+        FILE_FLAG_BACKUP_SEMANTICS, 
+        NULL
+	);
+
+	if (hVol == INVALID_HANDLE_VALUE) {
+		// printf("Volume open error\n");
+        exit(__LINE__);
+    }
+
+	NTFS_VOLUME_DATA_BUFFER volData = { 0 };
+    DWORD bRead = 0;
+
+	BOOL ok = DeviceIoControl(
+		hVol,
+        FSCTL_GET_NTFS_VOLUME_DATA,  // Управляющий код
+        NULL, 0,                      // Входной буфер не нужен
+        &volData, sizeof(volData), // Выходной буфер строго фиксированного размера
+        &bRead,
+        NULL
+	);
+
+	if(!ok){
+		// printf("failed to read NTFS_VOLUME_DATA, error: %lu\n", GetLastError());
+		exit(__LINE__);
+	}
+	
+	DWORD mftLen = volData.MftValidDataLength.QuadPart;
+
+	HANDLE hMft = CreateFileW(
+        L"\\\\?\\C:\\$MFT", 
+        FILE_READ_ATTRIBUTES, // Разрешено для системных метафайлов
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        NULL
+    );
+	
+	if (hMft == INVALID_HANDLE_VALUE) {
+        // printf("Failed to open $MFT via ID. Error: %lu\n", GetLastError());
+        exit(__LINE__);
+    }
+
+	STARTING_VCN_INPUT_BUFFER inputVcn;
+	inputVcn.StartingVcn.QuadPart = 0;
+
+	bufferSize = mftLen;
+	buffer = (BYTE*)malloc(bufferSize);
+
+	ok = DeviceIoControl(
+        hMft,
+        FSCTL_GET_RETRIEVAL_POINTERS,
+        &inputVcn,
+        sizeof(inputVcn),
+        buffer,
+        bufferSize,
+        &bRead,
+        NULL
+    );
+
+	if (!ok && GetLastError() != ERROR_MORE_DATA) {
+        // printf("Couldn't read retrieval points: %lu\n", GetLastError());
+        exit(__LINE__);
+    }
+
+	BYTE* extentsBuffer = (BYTE*)malloc(bRead);
+	memcpy(extentsBuffer, buffer, bRead);
+
+	RETRIEVAL_POINTERS_BUFFER* rpb = (RETRIEVAL_POINTERS_BUFFER*)extentsBuffer;
+	DWORD bLen;
+	UINT64 pointer = 0;;
+	LARGE_INTEGER pos;
+	UINT64 startingVcn = rpb->StartingVcn.QuadPart;
+	for(DWORD i = 0; i < rpb->ExtentCount; i++){
+
+		if(rpb->Extents[i].Lcn.QuadPart == -1){goto next_extent;}
+		bLen = (rpb->Extents[i].NextVcn.QuadPart - startingVcn)*volData.BytesPerCluster;		
+
+		pos.QuadPart = rpb->Extents[i].Lcn.QuadPart * volData.BytesPerCluster;
+		SetFilePointerEx(hVol, pos, NULL, FILE_BEGIN);
+
+		ok = ReadFile(hVol, (BYTE*)(buffer+pointer), bLen, &bRead, NULL);
+		if(!ok){
 			exit(__LINE__);
 		}
-		wcscpy(tasks[task_count], task);
-
-		task_count++;
-		// pushed_tasks++;
-
-	LeaveCriticalSection(&g_sc);
-	return;
-}
-
-void popTask(wchar_t** addr){
-	EnterCriticalSection(&g_sc);
-	
-		if(task_count == 0){
-			*addr = NULL;
-		}
-		else{
-			*addr = tasks[--task_count];
-		}
 		
-	LeaveCriticalSection(&g_sc);
-}
+		pointer += bLen;
+		next_extent:{
+			startingVcn = rpb->Extents[i].NextVcn.QuadPart;
+		}
+	}
 
-unsigned __stdcall taskRunner(void* param){
-	// const UINT8 id = (UINT8)(uintptr_t)param;
-	char im_active = 0;
+	CloseHandle(hMft);
+	CloseHandle(hVol);
 
-	WIN32_FIND_DATAW findData;
-	HANDLE hFind;
+	DWORD offset = volData.BytesPerFileRecordSegment;
+	DWORD cRecords = pointer / volData.BytesPerFileRecordSegment;
 
-	while(1){
-		wchar_t* dir;
-		popTask(&dir);
-		if(dir == NULL){
-			// InterlockedAnd64(&thrstat, ~(1ULL << id));
-			if(im_active){InterlockedDecrement(&thrstat); im_active = 0;}
-			if(InterlockedCompareExchange(&thrstat, 0, 0) == 0){
-				// logThread(id, "crashing");
+	mftDataRecords = (MFTDataRecord*)malloc(cRecords*sizeof(MFTDataRecord));
+	
+	BYTE* record = NULL;
+
+	for(DWORD i = 0; i < cRecords; i++){
+
+		record = buffer + (i * offset);
+
+		DWORD signature = *(DWORD*)record;
+		if(signature != 0x454C4946){ //[F][I][L][E]
+			continue;
+		}
+
+		WORD flags = *(WORD*)(record+22);
+		if(!(flags & 0x0001)){continue;} //не используемая запись
+
+		mftDataRecords[i].isDir = (flags & 0x0002) != 0;
+
+		WORD attrOffset = *(WORD*)(record + 20);
+		BYTE* attr = record + attrOffset;
+		BYTE* recordEnd = record + offset;
+
+		while(1){
+
+			if (attr >= recordEnd) {
+    		    // printf("CRASH at record %lu, attr overflow!\n", i);
+    		    break;
+    		}
+
+			DWORD attrType = *(DWORD *)(attr + 0);
+
+			if (attrType == 0xFFFFFFFF){ //конец списка
 				break;
 			}
-			else{
-				// logThread(id, "sleeping");
-				Sleep(0);
-				continue;
+			if (attrType == 0x30){
+				
+				BYTE* content = attr + *(WORD*)(attr + 0x14);
+				BYTE nameSpace = *(BYTE*)(content + 65);
+				if(nameSpace == 0x02){goto next_iteration;} //DOS (короткие имена) - скипаем
+
+				mftDataRecords[i].parentId = *(UINT64*)(content + 0) & 0xFFFFFFFFFFFF;
+				mftDataRecords[i].nameLen = *(BYTE*)(content + 64);
+				WCHAR* namePtr = (WCHAR*)(content + 66);
+			
+
+				memcpy(mftDataRecords[i].name, namePtr, mftDataRecords[i].nameLen*sizeof(WCHAR));
+				// printf("nameLen: %lu\n", nameLength);
+				mftDataRecords[i].name[mftDataRecords[i].nameLen] = L'\0';
+				
+			}
+
+			next_iteration:{
+				DWORD attrLen = *(DWORD*)(attr + 4);
+				if (attrLen == 0){break;}
+
+				attr += attrLen;
 			}
 		}
-		else{
-			// logThreadEx(id, "got dir: ", dir);
-			// fprintf(log_file, "\nTH#%d: popped dir len = %zu", id, wcslen(dir));
-			// logThreadEx(id, L"scanning: ", dir);
-			if(!im_active){InterlockedIncrement(&thrstat); im_active = 1;}
-			// InterlockedOr64(&thrstat, 1ULL << id);
-		}
-		
-		size_t len = wcslen(dir);
-		wchar_t* searchDir = malloc((len + 2)*sizeof(wchar_t));
-		if(searchDir == NULL){
-			exit(__LINE__);
-		}
 
-		memcpy(searchDir, dir, len*sizeof(wchar_t));
-		searchDir[len] = L'*';
-		searchDir[len+1] = L'\0';
+		cMftDataRecords++;
 
-		hFind = FindFirstFileW(searchDir, &findData);
+	}
+	free(buffer);
+}
 
-		if(hFind == INVALID_HANDLE_VALUE){
-			free(dir);
-		    free(searchDir);
-		    continue;
-		}
+//-1 Том не существует
+int getVolSizeGiB(WCHAR volName){
+	
+	WCHAR lpath[] = L"X:\\";
+	lpath[0] = volName;
+	ULARGE_INTEGER uli;
+	if(!GetDiskFreeSpaceExW(lpath, NULL, &uli, NULL)){return -1;}
 
-		do{
-			wchar_t* fileName = findData.cFileName;
-			if(wcscmp(fileName, L".") == 0 || wcscmp(fileName, L"..") == 0){continue;} //отсечение "." ".." из списка
+	return (int)(uli.QuadPart>>30);
+}
 
-			size_t name_len = wcslen(fileName);
+// void scanTable(){
+// 	WCHAR* fullName = (WCHAR*)_alloca(INDEX_START*sizeof(WCHAR));
+// 	if(!fullName){
+// 		// printf("fullname malloc fail, error: %lu", GetLastError());
+// 		exit(__LINE__);
+// 	}
+// 	fullName[(INDEX_START) - 1] = L'\0';
+// 	fullName[(INDEX_START) - 2] = L'>';
+// 	fullName[(INDEX_START) - 3] = L'2';
+// 	fullName[(INDEX_START) - 4] = L'<';
+// 	int index = INDEX_START-5;
 
-			UINT8 is_dir = (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-			if(is_dir){
+// 	UINT64 nextParent;
+// 	for(DWORD i = 5; i < cMftDataRecords; i++){
+// 		if(mftDataRecords[i].parentId == 0){continue;}
 
-				size_t dirlen = len + name_len;
+// 		if(StrHasIWBruteA(mftDataRecords[i].name, target)){ //Нашли файл по названию
 
-				wchar_t* newDirname = malloc((dirlen+2)*sizeof(wchar_t));
-				if(newDirname == NULL){
-					exit(__LINE__);
+// 			if(mftDataRecords[i].isDir){
+// 				fullName[index--] = L'>';
+// 				fullName[index--] = L'1';
+// 				fullName[index--] = L'<';
+// 			}
+// 			memcpy(fullName+(index-mftDataRecords[i].nameLen+1), mftDataRecords[i].name, mftDataRecords[i].nameLen*sizeof(WCHAR));
+// 			index -= (mftDataRecords[i].nameLen);
+// 			fullName[index--] = L'\\';
+
+// 			nextParent = mftDataRecords[i].parentId;
+// 			while(1){
+					
+// 				if(nextParent == parentDirId){
+// 					int pathLen = wcslen(path);
+// 					memcpy(fullName+(index-pathLen+2), path, pathLen*sizeof(WCHAR));
+// 					index -= pathLen;
+// 					printf("%ls\n",(WCHAR*)(fullName+index+2));
+// 					fflush(stdout);
+// 					break;
+// 				}
+// 				else if(nextParent == 5 && parentDirId != 5){
+// 					break;
+// 				}
+
+// 				if (index < 0) {
+// 				    // printf("ERROR: index underflow!\n");
+// 				    break;
+// 				}
+				
+// 				memcpy((fullName+(index-mftDataRecords[nextParent].nameLen+1)), mftDataRecords[nextParent].name, (mftDataRecords[nextParent].nameLen)*sizeof(WCHAR));
+// 				index -= (mftDataRecords[nextParent].nameLen);
+
+// 				fullName[index--] = L'\\';
+// 				nextParent = mftDataRecords[nextParent].parentId;
+
+// 			};
+// 			index = INDEX_START-5;
+// 		}
+// 	}
+// 	printf("<3>\n");
+// }
+
+unsigned int __stdcall parseTable(void* bytes){
+	DWORD start = ((ThreadArgs*)bytes)->start;
+	DWORD end = ((ThreadArgs*)bytes)->end;
+	WCHAR* resBuf = (WCHAR*)_alloca(1025*sizeof(WCHAR));
+	int resBufIndex = 0;
+
+	WCHAR* fullName = (WCHAR*)_alloca(INDEX_START*sizeof(WCHAR));
+	if(!fullName){
+		// printf("fullname malloc fail, error: %lu", GetLastError());
+		exit(__LINE__);
+	}
+	// fullName[(INDEX_START) - 1] = L'\0';
+	fullName[(INDEX_START) - 1] = L'>';
+	fullName[(INDEX_START) - 2] = L'2';
+	fullName[(INDEX_START) - 3] = L'<';
+	int index = INDEX_START-4;
+
+	UINT64 nextParent;
+	for(DWORD i = start; i < end; i++){
+		if(mftDataRecords[i].parentId == 0){continue;}
+
+		if(StrHasIWBruteA(mftDataRecords[i].name, target)){ //Нашли файл по названию
+
+			if(mftDataRecords[i].isDir){
+				fullName[index--] = L'>';
+				fullName[index--] = L'1';
+				fullName[index--] = L'<';
+			}
+			memcpy(fullName+(index-mftDataRecords[i].nameLen+1), mftDataRecords[i].name, mftDataRecords[i].nameLen*sizeof(WCHAR));
+			index -= (mftDataRecords[i].nameLen);
+			fullName[index--] = L'\\';
+
+			nextParent = mftDataRecords[i].parentId;
+			while(1){
+					
+				if(nextParent == parentDirId){
+					memcpy(fullName+(index-pathLen+2), path, pathLen*sizeof(WCHAR));
+					index -= pathLen;
+
+					if(resBufIndex + (INDEX_START-(index+2)) > 1024){
+						resBuf[resBufIndex] = L'\0';
+						EnterCriticalSection(&cs);
+							printf("%ls\n", resBuf);
+							fflush(stdout);
+						LeaveCriticalSection(&cs);
+						resBufIndex = 0;
+					}
+					memcpy((resBuf+resBufIndex), (WCHAR*)(fullName+index+2), (INDEX_START-(index+2))*sizeof(WCHAR));
+					resBufIndex += (INDEX_START-index-2);
+
+					// EnterCriticalSection(&cs);
+					// 	printf("%ls\n",(WCHAR*)(fullName+index+2));
+					// 	fflush(stdout);
+					// LeaveCriticalSection(&cs);
+
+					break;
+				}
+				else if(nextParent == 5 && parentDirId != 5){
+					break;
+				}
+
+				if (index < 0) {
+				    // printf("ERROR: index underflow!\n");
+				    break;
 				}
 				
-				memcpy(newDirname, dir, len*sizeof(wchar_t));
-				memcpy(newDirname + len, fileName, name_len*sizeof(wchar_t));
-				// fprintf(log_file, "\nTH#%d: len: %d", id, len*(sizeof(wchar_t)));
-				// fprintf(log_file, "\nTH#%d: name_len: %d", id, name_len*(sizeof(wchar_t)));
-				newDirname[dirlen] = L'/';
-				newDirname[dirlen+1] = L'\0';
-				// logThreadEx(id, L"newDirname after adding fileName: ", newDirname);
+				memcpy((fullName+(index-mftDataRecords[nextParent].nameLen+1)), mftDataRecords[nextParent].name, (mftDataRecords[nextParent].nameLen)*sizeof(WCHAR));
+				index -= (mftDataRecords[nextParent].nameLen);
 
-				// logThreadEx(id, L"pushing: ", newDirname);
-				pushTask(newDirname);
-				free(newDirname);
-			}
+				fullName[index--] = L'\\';
+				nextParent = mftDataRecords[nextParent].parentId;
 
-			//Проверка названия на совпадение
-			if(StrHasIWBruteA(fileName, targ)){
-				// wprintf(L"%ls%ls<%d><2>", dir, fileName, is_dir);
-				char utf8_dir[1024], utf8_file[1024];
-
-    			WideCharToMultiByte(CP_UTF8, 0, dir, -1, utf8_dir, sizeof(utf8_dir), NULL, NULL);
-    			WideCharToMultiByte(CP_UTF8, 0, fileName, -1, utf8_file, sizeof(utf8_file), NULL, NULL);
-				// fprintf("\n%s%s", dir, fileName);
-
-				char buffer[2048];
-				int len = snprintf(buffer, sizeof(buffer), "%s%s<%d><2>", utf8_dir, utf8_file, is_dir);
-				fwrite(buffer, 1, len, stdout);
-				fflush(stdout);
-
-				// printf("%ls%ls<%d><2>", dir, fileName, is_dir);
-				// fflush(stdout);
-
-				// logThreadEx(id, L"dir: ", dir);
-				// logThreadEx(id, L"fileName: ", fileName);
-				// fprintf(log_file, "\nTH#%d: result: %ls%ls<%d>", id, dir, fileName, (int)is_dir);
-			}
-
-		}while(FindNextFileW(hFind, &findData));
-
-		free(searchDir);
-		free(dir);
-
-		FindClose(hFind);
+			};
+			index = INDEX_START-4;
+		}
+	}
+	if(resBufIndex != 0){
+		EnterCriticalSection(&cs);
+			printf("%ls\n", resBuf);
+			fflush(stdout);
+		LeaveCriticalSection(&cs);
 	}
 	return 0;
 }
 
-void initThreads(DWORD maxthreads, HANDLE* threads){
-	for(int i = 0; i < maxthreads; i++){
-		threads[i] = (HANDLE)_beginthreadex(
-			NULL, 0,
-			taskRunner,
-			(void*)(intptr_t)i,
-			0, NULL
-		);
-		if(threads[i] == 0){
-			exit(__LINE__);
+void initThreads(){
+	DWORD remainder = 0;
+	DWORD unit = 0;
+
+	remainder = cMftDataRecords % CPUs;
+	unit = cMftDataRecords / CPUs;
+
+	DWORD index = 0;
+	for(int i = 0; i < CPUs; i++){
+		
+		if(remainder != 0 && i == 0){
+			thrArgs[0].start = 5;
+			thrArgs[0].end = unit+remainder;
+			index += unit+remainder;
 		}
+		else{
+			thrArgs[i].start = index;
+			thrArgs[i].end = index+unit;
+			index+=unit;
+		}
+
+		threads[i] = (HANDLE)_beginthreadex(
+			NULL,
+			0,
+			parseTable,
+			&thrArgs[i],
+			0,
+			NULL
+		);
 	}
 }
 
-int main(int argc, char* argv[]){
+int wmain(int argc, WCHAR* argv[]){
 
-	// log_file = fopen("debug_log.txt", "w");
-	// if(!log_file){
-	// 	printf("\nerr open log file");
-	// 	exit(__LINE__);
-	// }
-	// res_file = fopen("result.txt", "w");
-	// if(!res_file){
-	// 	printf("\nerr open res file");
-	// 	exit(__LINE__);
-	// }
-	// dir_log = fopen("dir_log.txt", "w");
-	// if(!dir_log){
-	// 	printf("\nerr open dir file");
-	// 	exit(__LINE__);
-	// }
+	path = argv[1];
+	pathLen = wcslen(path);
+	getLastFileId();
+	target = (WCHAR*)argv[2];
 
-	// setbuf(stdout, NULL);
+	SYSTEM_INFO sysInfo;
+	GetSystemInfo(&sysInfo);
+	CPUs = sysInfo.dwNumberOfProcessors*2;
 
-	SYSTEM_INFO sysinfo;
-	GetSystemInfo(&sysinfo);
-
-	DWORD maxthreads = sysinfo.dwNumberOfProcessors;
-	// DWORD maxthreads = 1;
+	threads = (HANDLE*)_alloca(CPUs * sizeof(HANDLE));
+	thrArgs = (ThreadArgs*)_alloca(CPUs * sizeof(ThreadArgs));
 	
-	HANDLE threads = alloca(maxthreads* sizeof(HANDLE));
+	InitializeCriticalSection(&cs);
+		makeTable();
+		initThreads();
+		WaitForMultipleObjects(CPUs, threads, TRUE, INFINITE);
+		printf("<3>\n");
+	DeleteCriticalSection(&cs);
 
-	// char* buffer = malloc(256 * 1024 * 1024);
-	_setmode(_fileno(stdout), 0x8000);
-	// _setmode(_fileno(stdout), 0x20000);
-	// setvbuf(stdout, buffer, _IOFBF, 256 * 1024 * 1024);
-	
-	tasks = malloc(1000 * sizeof(wchar_t*));
-	if(tasks == NULL){
-		exit(__LINE__);
-	}
-	task_cap = 1000;
+	// scanTable();
+	fflush(stdout);
 
-	InitializeCriticalSection(&g_sc);
-	
-		int size = MultiByteToWideChar(CP_UTF8, 0, argv[2], -1, NULL, 0);
-		wchar_t* searchStr = (wchar_t*)malloc(size * sizeof(wchar_t));
-		MultiByteToWideChar(CP_UTF8, 0, argv[2], -1, searchStr, size);
-		targ = searchStr;
-		
-		int utf8_len = strlen(argv[1]);
-		int wchar_size = MultiByteToWideChar(CP_UTF8, 0, argv[1], -1, NULL, 0);
-		
-		wchar_t* basetask = (wchar_t*)malloc((wchar_size + 1) * sizeof(wchar_t));
-		if (basetask == NULL) {
-		    exit(__LINE__);
-		}
-		MultiByteToWideChar(CP_UTF8, 0, argv[1], -1, basetask, wchar_size);
-		int current_len = wcslen(basetask);
-		basetask[current_len] = L'/';
-		basetask[current_len + 1] = L'\0';
-		pushTask(basetask);
-		free(basetask);
-
-		// LARGE_INTEGER frequency, start, end;
-		// QueryPerformanceFrequency(&frequency);
-		// QueryPerformanceCounter(&start);
-
-		initThreads(maxthreads, threads);
-		WaitForMultipleObjects(maxthreads, threads, TRUE, INFINITE);
-		printf("<3>");
-
-		// QueryPerformanceCounter(&end);  
-
-		// double elapsed = (double)(end.QuadPart - start.QuadPart) * 1000.0 / frequency.QuadPart;
-		// printf("\n=== EXECUTION TIME ===\n");
-		// printf("Scanning took: %.2f ms\n", elapsed);
-
-		fflush(stdout);
-
-	DeleteCriticalSection(&g_sc);
 	return 0;
 }

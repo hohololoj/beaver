@@ -58,7 +58,7 @@ class UIController{
 			if(result[i] == ''){continue;}
 			const currentRes = {};
 			const isDirCode = result[i].slice(-3);
-			const path = result[i].slice(0, -3);
+			const path = result[i].replace(/<1>/, '');
 			currentRes['type'] = isDirCode === '<1>' ? 'dir' : 'file';
 			currentRes['path'] = path;
 			result_sys.push(currentRes);
@@ -71,11 +71,11 @@ class UIController{
 		let startDir = startDirInput.value;
 		
 		if(!startDir){alert('Введите стартовую директорию'); return}
-		startDir = startDir.replace(/\\/g, '/');
+		startDir = startDir.replace(/\//g, '\\\\');
 		const [root, path, ...rest] = startDir.split(':/');
 		if(!root){alert('Путь должен быть абсолютным'); return}
 		if(rest.length !== 0){alert('Некорректный путь');return}
-		if(startDir.endsWith('/')){startDir = startDir.slice(0, -1)}
+		if(!startDir.endsWith('\\\\')){startDir = `${startDir}\\\\`;}
 
 		const searchStr = searchStrInput.value;
 		if(!searchStr){alert('Строка поиска не может быть пустой'); return}

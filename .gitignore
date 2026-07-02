@@ -1,3 +1,4 @@
 /build/
 features.txt
 /.vscode
+*.obj

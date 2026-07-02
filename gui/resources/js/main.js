@@ -54,19 +54,20 @@ class App {
         let ended = false;
 
         // const start = performance.now();
+        // console.log(`calling: "${NL_PATH}/beaver.exe" "${startDir}" "${searchStr}"`);
         const proc = await Neutralino.os.spawnProcess(`"${NL_PATH}/beaver.exe" "${startDir}" "${searchStr}"`);
         
         Neutralino.events.on("spawnedProcess", (e) => {
             if (proc.id === e.detail.id) {
                 switch (e.detail.action) {
                     case 'stdOut': {
-                        const data = e.detail.data;
+                        let data = e.detail.data;
                         if (data.includes('<3>')) {
                             // const end = performance.now();
                             // console.log(`Performance: ${end-start}ms`);
                             ended = true;
                             buffer += data;
-                            const result = buffer.slice(0, -3).split('<2>');
+                            const result = buffer.replace(/\r\n|\r|\n/g, '').replace(/<3>/, '').split('<2>');
                             window.uiController.showFoundResults(result);
                         }
                         else {
